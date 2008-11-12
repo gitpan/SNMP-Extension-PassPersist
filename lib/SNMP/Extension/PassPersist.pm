@@ -13,7 +13,7 @@ use List::MoreUtils qw(any);
 
 {
     no strict "vars";
-    $VERSION = '0.01';
+    $VERSION = '0.02';
 }
 
 use constant HAVE_SORT_KEY_OID => eval "use Sort::Key::OID qw<oidsort>; 1"?1:0;
@@ -26,7 +26,7 @@ for Net-SNMP
 
 =head1 VERSION
 
-This is the documentation of C<SNMP::Extension::PassPersist> version 0.01
+This is the documentation of C<SNMP::Extension::PassPersist> version 0.02
 
 =cut
 
@@ -47,19 +47,17 @@ __PACKAGE__->mk_accessors(@attributes);
 
 
 # constants --------------------------------------------------------------------
-use constant {
-    SNMP_NONE               => "NONE",
-    SNMP_PING               => "PING",
-    SNMP_PONG               => "PONG",
-    SNMP_GET                => "get",
-    SNMP_GETNEXT            => "getnext",
-    SNMP_SET                => "set",
-    SNMP_NOT_WRITABLE       => "not-writable",
-    SNMP_WRONG_TYPE         => "wrong-type",
-    SNMP_WRONG_LENGTH       => "wrong-length",
-    SNMP_WRONG_VALUE        => "wrong-value",
-    SNMP_INCONSISTENT_VALUE => "inconsistent-value",
-};
+use constant SNMP_NONE                  => "NONE";
+use constant SNMP_PING                  => "PING";
+use constant SNMP_PONG                  => "PONG";
+use constant SNMP_GET                   => "get";
+use constant SNMP_GETNEXT               => "getnext";
+use constant SNMP_SET                   => "set";
+use constant SNMP_NOT_WRITABLE          => "not-writable";
+use constant SNMP_WRONG_TYPE            => "wrong-type";
+use constant SNMP_WRONG_LENGTH          => "wrong-length";
+use constant SNMP_WRONG_VALUE           => "wrong-value";
+use constant SNMP_INCONSISTENT_VALUE    => "inconsistent-value";
 
 
 # global variables -------------------------------------------------------------
@@ -73,6 +71,7 @@ my %snmp_ext_type = (
     objectid    => "objectid",
     octetstr    => "string",
 #   opaque      => "opaque",
+    string      => "string",
     timeticks   => "timeticks",
 );
 
@@ -84,12 +83,14 @@ my %snmp_ext_type = (
 sub new {
     my ($class, @args) = @_;
     my %attrs;
+    my $ref = ref $args[0];
 
     # see how arguments were passed
-    if (ref $args[0] and ref $args[0] eq "HASH") {
+    if ($ref and $ref eq "HASH") {
         %attrs = %{$args[0]};
     }
     else {
+        croak "error: Don't know how to handle \L$ref reference" if $ref;
         croak "error: Odd number of arguments"  if @args % 2 == 1;
         %attrs = @args;
     }
@@ -141,17 +142,23 @@ sub run {
     GetOptions(\my %options, qw<get|g=s  getnext|n=s  set|s=s>)
         or croak "fatal: An error occured while processing runtime arguments";
 
+    # initialise the backend
+    eval { $self->backend_init->(); 1 }
+        or croak "fatal: An error occurred while executing the backend "
+                ."initialisation callback: $@";
+
     # collect the information
-    $self->backend_init->();
-    $self->backend_collect->();
+    eval { $self->backend_collect->(); 1 }
+        or croak "fatal: An error occurred while executing the backend "
+                ."collecting callback: $@";
 
     # Net-SNMP "pass" mode
-    if (any {defined $options{$_}} qw<get getnext set>) {
+    if (any {defined $options{$_}} "get", "getnext", "set") {
         for my $op (qw<get getnext set>) {
             if ($options{$op}) {
                 my @args = split /,/, $options{$op};
                 my $coderef = $self->dispatch->{$op}{code};
-                my @result = $self->$coderef(@args);
+                my @result = $coderef->($self, @args);
                 $self->output->print(join $/, @result, "");
             }
         }
@@ -182,7 +189,9 @@ sub run {
 
             if ($delay <= 0) {
                 # collect information when the timeout has expired
-                $self->backend_collect->();
+                eval { $self->backend_collect->(); 1 }
+                    or croak "fatal: An error occurred while executing "
+                            ."the backend collecting callback: $@";
 
                 # reset delay
                 $delay = $self->refresh;
@@ -198,7 +207,11 @@ sub run {
 # -------------
 sub add_oid_entry {
     my ($self, $oid, $type, $value) = @_;
+
+    croak "error: Unknown type '$type'" unless exists $snmp_ext_type{$type};
     $self->oid_tree->{$oid} = [$type => $value];
+
+    return 1
 }
 
 
@@ -206,8 +219,14 @@ sub add_oid_entry {
 # add_oid_tree()
 # ------------
 sub add_oid_tree {
-    my ($self, $oid_tree) = @_;
-    croak "*** not implemented ***"
+    my ($self, $new_tree) = @_;
+
+    croak "error: Unknown type"
+        if any { !$snmp_ext_type{$_[0]} } values %$new_tree;
+    my $oid_tree = $self->oid_tree;
+    @{$oid_tree}{keys %$new_tree} = values %$new_tree;
+
+    return 1
 }
 
 
@@ -287,7 +306,7 @@ sub process_cmd {
 
         # call the command handler
         my $coderef = $dispatch->{$cmd}{code};
-        @result = $self->$coderef(@args);
+        @result = $coderef->($self, @args);
     }
     else {
         @result = SNMP_NONE;
@@ -348,8 +367,8 @@ sub fetch_first_entry {
 # sort() sub-function, for sorting by OID
 #
 sub by_oid ($$) {
-    my @a = split /\./, $_[0];
-    my @b = split /\./, $_[1];
+    my (undef, @a) = split /\./, $_[0];
+    my (undef, @b) = split /\./, $_[1];
     my $v = 0;
     $v ||= $a[$_] <=> $b[$_] for 0 .. $#a;
     return $v
