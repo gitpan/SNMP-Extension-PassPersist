@@ -2,21 +2,22 @@ package SNMP::Extension::PassPersist;
 use strict;
 use warnings;
 
-use parent qw(Class::Accessor);
+use parent qw<Class::Accessor>;
 
 use Carp;
-use Getopt::Long    qw(:config no_auto_abbrev no_ignore_case);
+use Getopt::Long;
 use IO::Handle;
 use IO::Select;
-use List::MoreUtils qw(any);
+use List::MoreUtils qw<any>;
 
 
 {
     no strict "vars";
-    $VERSION = '0.02';
+    $VERSION = '0.03';
 }
 
-use constant HAVE_SORT_KEY_OID => eval "use Sort::Key::OID qw<oidsort>; 1"?1:0;
+use constant HAVE_SORT_KEY_OID
+                    => eval "use Sort::Key::OID 0.04 qw<oidsort>; 1" ? 1 : 0;
 
 
 =head1 NAME
@@ -26,7 +27,7 @@ for Net-SNMP
 
 =head1 VERSION
 
-This is the documentation of C<SNMP::Extension::PassPersist> version 0.02
+This is the documentation of C<SNMP::Extension::PassPersist> version 0.03
 
 =cut
 
@@ -38,6 +39,7 @@ my @attributes = qw<
     idle_count
     input
     oid_tree
+    sorted_entries
     output
     refresh
     dispatch
@@ -110,12 +112,13 @@ sub new {
     %attrs = (
         backend_init    => sub {},
         backend_collect => sub {},
-        input       => \*STDIN,
-        output      => \*STDOUT,
-        oid_tree    => {},
-        idle_count  => 5,
-        refresh     => 10,
-        dispatch    => {
+        input           => \*STDIN,
+        output          => \*STDOUT,
+        oid_tree        => {},
+        sorted_entries  => [],
+        idle_count      => 5,
+        refresh         => 10,
+        dispatch        => {
             lc(SNMP_PING)    => { nargs => 0,  code => \&ping        },
             lc(SNMP_GET)     => { nargs => 1,  code => \&get_oid     },
             lc(SNMP_GETNEXT) => { nargs => 1,  code => \&getnext_oid },
@@ -178,7 +181,8 @@ sub run {
 
             if (my($input) = $io->can_read($delay)) {
                 if (my $cmd = <$input>) {
-                    $self->process_cmd(lc($cmd), $input)
+                    $self->process_cmd(lc($cmd), $input);
+                    $counter = $self->idle_count;
                 }
                 else {
                     $needed = 0
@@ -211,6 +215,9 @@ sub add_oid_entry {
     croak "error: Unknown type '$type'" unless exists $snmp_ext_type{$type};
     $self->oid_tree->{$oid} = [$type => $value];
 
+    # need to resort
+    @{$self->sorted_entries} = ();
+
     return 1
 }
 
@@ -225,6 +232,9 @@ sub add_oid_tree {
         if any { !$snmp_ext_type{$_[0]} } values %$new_tree;
     my $oid_tree = $self->oid_tree;
     @{$oid_tree}{keys %$new_tree} = values %$new_tree;
+
+    # need to resort
+    @{$self->sorted_entries} = ();
 
     return 1
 }
@@ -323,24 +333,28 @@ sub process_cmd {
 sub fetch_next_entry {
     my ($self, $req_oid) = @_;
 
-    my @entries = HAVE_SORT_KEY_OID
-                ? oidsort(keys %{ $self->oid_tree })
-                : sort by_oid keys %{ $self->oid_tree };
+    my $entries = $self->sorted_entries;
+
+    if (!@$entries) {
+        @$entries = HAVE_SORT_KEY_OID
+            ? oidsort(keys %{ $self->oid_tree })
+            : sort by_oid keys %{ $self->oid_tree };
+    }
 
     # find the index of the current entry
     my $curr_entry_idx = -1;
 
-    for my $i (0..$#entries) {
+    for my $i (0..$#{$self->sorted_entries}) {
         # exact match of the requested entry
-        $curr_entry_idx = $i and last if $entries[$i] eq $req_oid;
+        $curr_entry_idx = $i and last if $entries->[$i] eq $req_oid;
 
         # prefix match of the requested entry
         $curr_entry_idx = $i - 1
-            if index($entries[$i], $req_oid) >= 0 and $curr_entry_idx == -1;
+            if index($entries->[$i], $req_oid) >= 0 and $curr_entry_idx == -1;
     }
 
     # get the next entry if it exists, otherwise none
-    my $next_entry_oid = $entries[$curr_entry_idx + 1] || SNMP_NONE;
+    my $next_entry_oid = $entries->[$curr_entry_idx + 1] || SNMP_NONE;
 
     return $next_entry_oid
 }
@@ -352,10 +366,14 @@ sub fetch_next_entry {
 sub fetch_first_entry {
     my ($self) = @_;
 
-    my @entries = HAVE_SORT_KEY_OID
-                ? oidsort(keys %{ $self->oid_tree })
-                : sort by_oid keys %{ $self->oid_tree };
-    my $first_entry_oid = $entries[0];
+    my $entries = $self->sorted_entries;
+
+    if (!@$entries) {
+        @$entries = HAVE_SORT_KEY_OID
+            ? oidsort(keys %{ $self->oid_tree })
+            : sort by_oid keys %{ $self->oid_tree };
+    }
+    my $first_entry_oid = $entries->[0];
 
     return $first_entry_oid
 }

@@ -1,6 +1,6 @@
 ---
 name: SNMP-Extension-PassPersist
-version: 0.02
+version: 0.03
 author:
   - 'Sebastien Aperghis-Tramoni <sebastien@aperghis.net>'
 abstract: |-
@@ -23,12 +23,12 @@ requires:
 build_requires:
   Test::More: 0.45
 recommends:
-  Sort::Key::OID: 0.03
+  Sort::Key::OID: 0.04
 provides:
   SNMP::Extension::PassPersist:
     file: lib/SNMP/Extension/PassPersist.pm
-    version: 0.02
-generated_by: Module::Build version 0.2808
+    version: 0.03
+generated_by: Module::Build version 0.3
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.2.html
   version: 1.2
