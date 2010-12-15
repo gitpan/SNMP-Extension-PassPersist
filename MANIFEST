@@ -6,6 +6,7 @@ README
 README.pod
 Changes
 lib/SNMP/Extension/PassPersist.pm
+eg/pseudo-walk
 eg/synopsis-pass.pl
 eg/synopsis-passpersist.pl
 t/00-load.t
@@ -18,4 +19,5 @@ t/50-walk.t
 t/90-pod.t
 t/91-pod-coverage.t
 t/Utils.pm
+t/bugs/cpan-rt-43579.pl
 t/bugs/cpan-rt-46256.t

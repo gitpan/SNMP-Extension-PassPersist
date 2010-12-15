@@ -18,7 +18,7 @@ name: SNMP-Extension-PassPersist
 provides:
   SNMP::Extension::PassPersist:
     file: lib/SNMP/Extension/PassPersist.pm
-    version: 0.04
+    version: 0.05
 recommends:
   Sort::Key::OID: 0.04
 requires:
@@ -31,4 +31,4 @@ requires:
   perl: 5.006
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.04
+version: 0.05
