@@ -1,34 +1,34 @@
 ---
-name: SNMP-Extension-PassPersist
-version: 0.03
+abstract: "Generic pass/pass_persist extension framework\nfor Net-SNMP"
 author:
   - 'Sebastien Aperghis-Tramoni <sebastien@aperghis.net>'
-abstract: |-
-  Generic pass/pass_persist extension framework
-  for Net-SNMP
-license: perl
-resources:
-  license: http://dev.perl.org/licenses/
-requires:
-  Class::Accessor: 0.30
-  File::Temp: 0.12
-  Getopt::Long: 2.04
-  IO::File: 1.05
-  IO::Handle: 1.15
-  IO::Select: 1.10
-  IO::String: 1.00
-  List::MoreUtils: 0.21
-  parent: 0.221
-  perl: 5.006
 build_requires:
+  File::Temp: 0.14
+  IO::File: 1.05
+  IO::String: 1.00
   Test::More: 0.45
-recommends:
-  Sort::Key::OID: 0.04
+configure_requires:
+  Module::Build: 0.36
+generated_by: 'Module::Build version 0.3607'
+license: perl
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: SNMP-Extension-PassPersist
 provides:
   SNMP::Extension::PassPersist:
     file: lib/SNMP/Extension/PassPersist.pm
-    version: 0.03
-generated_by: Module::Build version 0.3
-meta-spec:
-  url: http://module-build.sourceforge.net/META-spec-v1.2.html
-  version: 1.2
+    version: 0.04
+recommends:
+  Sort::Key::OID: 0.04
+requires:
+  Class::Accessor: 0.30
+  Getopt::Long: 2.04
+  IO::Handle: 1.15
+  IO::Select: 1.10
+  List::MoreUtils: 0.21
+  parent: 0.221
+  perl: 5.006
+resources:
+  license: http://dev.perl.org/licenses/
+version: 0.04

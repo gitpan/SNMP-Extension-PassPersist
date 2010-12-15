@@ -33,22 +33,26 @@ my $i = 1;
 
 sub update_tree {
     my ($self) = @_;
-    eval { $extsnmp->add_oid_entry($oid, $type, $value) };
+    eval { $self->add_oid_entry($oid, $type, $value) };
     is( $@, "", "[$i] update_tree(): add_oid_entry('$oid', '$type', '$value')" );
-    is_deeply( $extsnmp->oid_tree, \%expected_tree,
+    is_deeply( $self->oid_tree, \%expected_tree,
         "[$i] update_tree(): check internal OID tree consistency" );
     $i++;
 }
 
-# execute the main loop
+# prepare the input and output
 my $fh = File::Temp->new;
 $fh->print($input);
 $fh->close;
 my ($stdin, $stdout) = ( IO::File->new($fh->filename), wo_fh(\my $output) );
+
+# configure the object for the test
 $extsnmp->input($stdin);
 $extsnmp->output($stdout);
 $extsnmp->idle_count(1);
 $extsnmp->refresh(1);
+
+# execute the main loop
 eval { $extsnmp->run };
 is( $@, "", "\$extsnmp->run" );
 is( $output, $expected_output, "check the output" );

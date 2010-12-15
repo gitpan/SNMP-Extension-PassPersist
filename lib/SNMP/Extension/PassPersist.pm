@@ -6,36 +6,31 @@ use parent qw<Class::Accessor>;
 
 use Carp;
 use Getopt::Long;
+use File::Basename;
 use IO::Handle;
+use IO::Pipe;
 use IO::Select;
 use List::MoreUtils qw<any>;
+use Storable            qw< nfreeze thaw >;
+use Sys::Syslog;
 
 
 {
     no strict "vars";
-    $VERSION = '0.03';
+    $VERSION = '0.04';
 }
 
 use constant HAVE_SORT_KEY_OID
                     => eval "use Sort::Key::OID 0.04 qw<oidsort>; 1" ? 1 : 0;
 
 
-=head1 NAME
-
-SNMP::Extension::PassPersist - Generic pass/pass_persist extension framework
-for Net-SNMP
-
-=head1 VERSION
-
-This is the documentation of C<SNMP::Extension::PassPersist> version 0.03
-
-=cut
-
-
 # early initialisations --------------------------------------------------------
 my @attributes = qw<
-    backend_init
     backend_collect
+    backend_fork
+    backend_init
+    backend_pipe
+    heap
     idle_count
     input
     oid_tree
@@ -110,8 +105,10 @@ sub new {
 
     # default values
     %attrs = (
-        backend_init    => sub {},
         backend_collect => sub {},
+        backend_fork    => 0,
+        backend_init    => sub {},
+        heap            => {},
         input           => \*STDIN,
         output          => \*STDOUT,
         oid_tree        => {},
@@ -145,18 +142,38 @@ sub run {
     GetOptions(\my %options, qw<get|g=s  getnext|n=s  set|s=s>)
         or croak "fatal: An error occured while processing runtime arguments";
 
-    # initialise the backend
-    eval { $self->backend_init->(); 1 }
-        or croak "fatal: An error occurred while executing the backend "
-                ."initialisation callback: $@";
+    my $name = $::COMMAND || basename($0);
+    openlog($name, "ndelay,pid", "local0");
 
-    # collect the information
-    eval { $self->backend_collect->(); 1 }
-        or croak "fatal: An error occurred while executing the backend "
-                ."collecting callback: $@";
+    my ($mode_pass, $mode_passpersist);
+    my $backend_fork = $self->backend_fork;
+
+    # determine the run mode
+    if (any { defined $options{$_} } "get", "getnext", "set") {
+        $mode_pass          = 1;
+        $mode_passpersist   = 0;
+    }
+    else {
+        $mode_pass          = 0;
+        $mode_passpersist   = 1;
+    }
+
+    # execute the init and collect callback once, except in the case
+    # where the backend run in a separate process
+    unless ($mode_passpersist and $backend_fork) {
+        # initialise the backend
+        eval { $self->backend_init->($self); 1 }
+            or croak "fatal: An error occurred while executing the backend "
+                    ."initialisation callback: $@";
+
+        # collect the information
+        eval { $self->backend_collect->($self); 1 }
+            or croak "fatal: An error occurred while executing the backend "
+                    ."collecting callback: $@";
+    }
 
     # Net-SNMP "pass" mode
-    if (any {defined $options{$_}} "get", "getnext", "set") {
+    if ($mode_pass) {
         for my $op (qw<get getnext set>) {
             if ($options{$op}) {
                 my @args = split /,/, $options{$op};
@@ -171,37 +188,142 @@ sub run {
         my $needed  = 1;
         my $delay   = $self->refresh;
         my $counter = $self->idle_count;
+        my ($pipe, $child);
+
+        # if the backend is to be run in a separate process,
+        # create a pipe and fork
+        if ($backend_fork) {
+            $pipe = IO::Pipe->new;
+            $self->backend_pipe($pipe);
+
+            $child = fork;
+            my $msg = "fatal: can't fork: $!";
+            syslog err => $msg and die $msg
+                unless defined $child;
+
+            # child setup is handled in run_backend_loop()
+            goto &run_backend_loop if $child == 0;
+
+            # parent setup
+            $pipe->reader;  # declare this end of the pipe as the reader
+            $pipe->autoflush(1);
+        }
 
         my $io = IO::Select->new;
         $io->add($self->input);
         $self->output->autoflush(1);
 
+        if ($backend_fork) {
+            $io->add($pipe);
+            $SIG{CHLD} = sub { $io->remove($pipe); waitpid($child, 0); };
+        }
+
+
+        # main loop
         while ($needed and $counter > 0) {
             my $start_time = time;
 
-            if (my($input) = $io->can_read($delay)) {
-                if (my $cmd = <$input>) {
-                    $self->process_cmd(lc($cmd), $input);
-                    $counter = $self->idle_count;
+            # wait for some input data
+            my @ready = $io->can_read($delay);
+
+            for my $fh (@ready) {
+                # handle input data from netsnmpd
+                if ($fh == $self->input) {
+                    if (my $cmd = <$fh>) {
+                        $self->process_cmd(lc($cmd), $fh);
+                        $counter = $self->idle_count;
+                    }
+                    else {
+                        $needed = 0
+                    }
                 }
-                else {
-                    $needed = 0
+
+                # handle input data from the backend process
+                if ($backend_fork and $fh == $pipe) {
+                    use bytes;
+
+                    # read a first chunk from the child
+                    $fh->sysread(my $buffer, 20);
+                    last unless length $buffer;
+
+                    # extract the header
+                    my $headline= substr($buffer, 0, index($buffer, "\n")+1, "");
+                    chomp $headline;
+                    my %header  = map { split /=/, $_, 2 } split /\|/, $headline;
+
+                    # read the date in Storable format
+                    my $length  = $header{length};
+                    $fh->sysread(my $freezed, $length);
+                    $freezed    = $buffer.$freezed;
+
+                    # decode the freezed data
+                    my $struct  = thaw($freezed);
+                    $self->add_oid_tree($struct);
                 }
             }
 
             $delay = $delay - (time() - $start_time);
 
             if ($delay <= 0) {
-                # collect information when the timeout has expired
-                eval { $self->backend_collect->(); 1 }
-                    or croak "fatal: An error occurred while executing "
-                            ."the backend collecting callback: $@";
+                if (not $backend_fork) {
+                    # collect information when the timeout has expired
+                    eval { $self->backend_collect->($self); 1 }
+                        or croak "fatal: An error occurred while executing "
+                                ."the backend collecting callback: $@";
+                }
 
                 # reset delay
                 $delay = $self->refresh;
                 $counter--;
             }
         }
+
+        if ($backend_fork) {
+            kill TERM => $child;
+            sleep 1;
+            kill KILL => $child;
+            waitpid($child, 0);
+        }
+    }
+}
+
+
+#
+# run_backend_loop()
+# ----------------
+sub run_backend_loop {
+    my ($self) = @_;
+
+    my $pipe = $self->backend_pipe;
+    $pipe->writer;  # declare this end of the pipe as the writer
+    $pipe->autoflush(1);
+
+    # execute the initialisation callback
+    eval { $self->backend_init->($self); 1 }
+        or croak "fatal: An error occurred while executing the backend "
+                ."initialisation callback: $@";
+
+    while (1) {
+        my $start_time = time;
+
+        # execute the collect callback
+        eval { $self->backend_collect->($self); 1 }
+            or croak "fatal: An error occurred while executing the backend "
+                    ."collecting callback: $@";
+
+        # freeze the OID tree using Storable
+        use bytes;
+        my $freezed = nfreeze($self->oid_tree);
+        my $length  = length $freezed;
+        my $output  = "length=$length\n$freezed";
+
+        # send it to the parent via the pipe
+        $pipe->syswrite($output);
+        select(undef, undef, undef, .000_001);
+
+        # wait before next execution
+        my $delay = $self->refresh() - (time() - $start_time);
+        sleep $delay;
     }
 }
 
@@ -229,7 +351,7 @@ sub add_oid_tree {
     my ($self, $new_tree) = @_;
 
     croak "error: Unknown type"
-        if any { !$snmp_ext_type{$_[0]} } values %$new_tree;
+        if any { !$snmp_ext_type{$_->[0]} } values %$new_tree;
     my $oid_tree = $self->oid_tree;
     @{$oid_tree}{keys %$new_tree} = values %$new_tree;
 
@@ -237,6 +359,22 @@ sub add_oid_tree {
     @{$self->sorted_entries} = ();
 
     return 1
+}
+
+
+#
+# dump_oid_tree()
+# -------------
+sub dump_oid_tree {
+    my ($self) = @_;
+
+    my $oid_tree = $self->oid_tree;
+    my $output   = $self->output;
+
+    for my $oid (sort by_oid keys %$oid_tree) {
+        my ($type, $value) = @{ $oid_tree->{$oid} };
+        $output->print("$oid ($type) = $value\n");
+    }
 }
 
 
@@ -344,13 +482,13 @@ sub fetch_next_entry {
     # find the index of the current entry
     my $curr_entry_idx = -1;
 
-    for my $i (0..$#{$self->sorted_entries}) {
+    for my $i (0..$#$entries) {
         # exact match of the requested entry
         $curr_entry_idx = $i and last if $entries->[$i] eq $req_oid;
 
         # prefix match of the requested entry
-        $curr_entry_idx = $i - 1
-            if index($entries->[$i], $req_oid) >= 0 and $curr_entry_idx == -1;
+        $curr_entry_idx = $i - 1 and last
+            if $curr_entry_idx == -1 and index($entries->[$i], $req_oid) >= 0;
     }
 
     # get the next entry if it exists, otherwise none
@@ -393,10 +531,27 @@ sub by_oid ($$) {
 }
 
 
+32272
+
+__END__
+
+
+=head1 NAME
+
+SNMP::Extension::PassPersist - Generic pass/pass_persist extension framework
+for Net-SNMP
+
+
+=head1 VERSION
+
+This is the documentation of C<SNMP::Extension::PassPersist> version 0.03
+
 
 =head1 SYNOPSIS
 
-    # typical setup for a pass programm
+Typical setup for a C<pass> program:
+
+    use strict;
     use SNMP::Extension::PassPersist;
 
     # create the object
@@ -409,8 +564,9 @@ sub by_oid ($$) {
     # run the program
     $extsnmp->run;
 
+Typical setup for a C<pass_persist> program:
 
-    # typical setup for a pass_persist program
+    use strict;
     use SNMP::Extension::PassPersist;
 
     my $extsnmp = SNMP::Extension::PassPersist->new(
@@ -453,11 +609,13 @@ See L<"ATTRIBUTES"> for the list of available attributes.
 
 B<Examples:>
 
-    # for a "pass" command, most attributes are useless
+For a C<pass> command, most attributes are useless:
+
     my $extsnmp = SNMP::Extension::PassPersist->new;
 
-    # for a "pass_persist" command, you'll usually want to
-    # at least set the backend_collect callback
+For a C<pass_persist> command, you'll usually want to at least set the
+C<backend_collect> callback:
+
     my $extsnmp = SNMP::Extension::PassPersist->new(
         backend_collect => \&update_tree,
         idle_count      => 10,      # no more than 10 idle cycles
@@ -485,10 +643,10 @@ call the backend collect callback a first time
 
 =back
 
-Then, when in "pass" mode, the corresponding SNMP command is executed,
+Then, when in C<pass> mode, the corresponding SNMP command is executed,
 its result is printed on the output filehandle, and C<run()> returns.
 
-When in "pass_persist" mode, C<run()> enters a loop, reading Net-SNMP
+When in C<pass_persist> mode, C<run()> enters a loop, reading Net-SNMP
 queries on its input filehandle, processing them, and printing result
 on its output filehandle. The backend collect callback is called every
 C<refresh> seconds. If no query is read from the input after C<idle_count>
@@ -503,22 +661,33 @@ Add an entry to the OID tree.
 Merge an OID tree to the main OID tree, using the same structure as
 the one of the OID tree itself.
 
+=head2 dump_oid_tree()
+
+Print a complete listing of the OID tree on the output file handle.
+
 
 =head1 ATTRIBUTES
 
 This module's attributes are generated by C<Class::Accessor>, and can
 therefore be passed as arguments to C<new()> or called as object methods.
 
-=head2 backend_init
-
-Set the code reference for a backend callback that will be called only
-once, at the beginning of C<run()>, just after parsing the command-line
-arguments. See also L<"CALLBACKS">.
-
 =head2 backend_collect
 
-Set the code reference for a backend callback that will be called every
-C<refresh> seconds to update the OID tree. See also L<"CALLBACKS">.
+Set the code reference for the I<collect> callback. See also L<"CALLBACKS">.
+
+=head2 backend_fork
+
+When set to true, the backend callbacks will be executed in a separate
+process. Default value is false.
+
+=head2 backend_init
+
+Set the code reference for the I<init> callback. See also L<"CALLBACKS">.
+
+=head2 backend_pipe
+
+Contains the pipe used to communicate with the backend child, when executed
+in a separate process.
 
 =head2 dispatch
 
@@ -534,6 +703,10 @@ where the SNMP command is always in lowercase, C<nargs> gives the number
 of arguments expected by the command and C<code> the callback reference.
 
 You should not modify this table unless you really know what you're doing.
+
+=head2 heap
+
+Give access to the heap.
 
 =head2 idle_count
 
@@ -572,7 +745,77 @@ to update the OID tree.
 
 =head1 CALLBACKS
 
-...
+The callbacks are invoked with the corresponding object as first argument,
+as for a normal method. A heap is available for storing user-defined data.
+
+In the specific case of a programm running in C<pass_persist> mode with
+a forked backend, the callbacks are only executed in the child process
+(the forked backend).
+
+The currently implemented callbacks are:
+
+=over
+
+=item * init
+
+This callback is called once, before the first I<collect> invocation
+and before the main loop. It can be accessed and modified through the
+C<backend_init> attribute.
+
+=item * collect
+
+This callback is called every C<refresh> seconds so the user can update
+the OID tree using the C<add_oid_entry()> and C<add_oid_tree()> methods.
+
+=back
+
+=head2 Examples
+
+For simple needs, only the I<collect> callback needs to be defined:
+
+    my $extsnmp = SNMP::Extension::PassPersist->new(
+        backend_collect => \&update_tree,
+    );
+
+    sub update_tree {
+        my ($self) = @_;
+
+        # fetch the number of running processes
+        my $nb_proc = @{ Proc::ProcessTable->new->table };
+
+        $self->add_oid_entry("1.3.6.1.4.1.32272.10", gauge", $nb_proc);
+    }
+
+A more advanced example is when there is a need to connect to a database,
+in which case both the I<init> and I<collect> callback need to be defined:
+
+    my $extsnmp = SNMP::Extension::PassPersist->new(
+        backend_init    => \&connect_db,
+        backend_collect => \&update_tree,
+    );
+
+    sub connect_db {
+        my ($self) = @_;
+        my $heap = $self->heap;
+
+        # connect to a database
+        my $dbh = DBI->connect($dsn, $user, $password);
+        $heap->{dbh} = $dbh;
+    }
+
+    sub update_tree {
+        my ($self) = @_;
+        my $heap = $self->heap;
+
+        # fetch the number of records from a given table
+        my $dbh = $heap->{dbh};
+        my $sth = $dbh->prepare_cached("SELECT count(*) FROM whatever");
+        $sth->execute;
+        my ($count) = $sth->fetchrow_array;
+
+        $self->add_oid_entry("1.3.6.1.4.1.32272.20", "gauge", $count);
+    }
+
 
 
 =head1 SEE ALSO
@@ -581,7 +824,7 @@ L<SNMP::Persist> is another pass_persist backend for writing Net-SNMP
 extensions, but relies on threads.
 
 The documentation of Net-SNMP, especially the part on how to configure
-a pass or pass_persist extension:
+a C<pass> or C<pass_persist> extension:
 
 =over
 
@@ -592,14 +835,9 @@ main site: L<http://www.net-snmp.org/>
 =item *
 
 configuring a pass or pass_persist extension:
-L<http://www.net-snmp.org/docs/man/snmpd.conf.html#lbAY>
+L<http://www.net-snmp.org/docs/man/snmpd.conf.html#lbBB>
 
 =back
-
-
-=head1 AUTHOR
-
-SE<eacute>bastien Aperghis-Tramoni, C<< <sebastien at aperghis.net> >>
 
 
 =head1 BUGS
@@ -621,7 +859,7 @@ You can find documentation for this module with the perldoc command.
 
 You can also look for information at:
 
-=over 4
+=over
 
 =item * RT: CPAN's request tracker
 
@@ -642,14 +880,17 @@ L<http://search.cpan.org/dist/SNMP-Extension-PassPersist>
 =back
 
 
+=head1 AUTHOR
+
+SE<eacute>bastien Aperghis-Tramoni, C<< <sebastien at aperghis.net> >>
+
+
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2008 SE<eacute>bastien Aperghis-Tramoni, all rights reserved.
+Copyright 2008-2010 SE<eacute>bastien Aperghis-Tramoni, all rights reserved.
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
 
-
 =cut
 
-32272
