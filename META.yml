@@ -8,8 +8,9 @@ build_requires:
   IO::String: 1.00
   Test::More: 0.45
 configure_requires:
-  Module::Build: 0.36
-generated_by: 'Module::Build version 0.3607'
+  Module::Build: 0.38
+dynamic_config: 1
+generated_by: 'Module::Build version 0.38, CPAN::Meta::Converter version 2.110930001'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -18,7 +19,7 @@ name: SNMP-Extension-PassPersist
 provides:
   SNMP::Extension::PassPersist:
     file: lib/SNMP/Extension/PassPersist.pm
-    version: 0.05
+    version: 0.06
 recommends:
   Sort::Key::OID: 0.04
 requires:
@@ -31,4 +32,5 @@ requires:
   perl: 5.006
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.05
+  repository: https://github.com/maddingue/SNMP-Extension-PassPersist
+version: 0.06

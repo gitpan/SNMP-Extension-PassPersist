@@ -1,0 +1,61 @@
+{
+   "abstract" : "Generic pass/pass_persist extension framework\nfor Net-SNMP",
+   "author" : [
+      "Sebastien Aperghis-Tramoni <sebastien@aperghis.net>"
+   ],
+   "dynamic_config" : 1,
+   "generated_by" : "Module::Build version 0.38, CPAN::Meta::Converter version 2.110930001",
+   "license" : [
+      "perl_5"
+   ],
+   "meta-spec" : {
+      "url" : "http://search.cpan.org/perldoc?CPAN::Meta::Spec",
+      "version" : "2"
+   },
+   "name" : "SNMP-Extension-PassPersist",
+   "prereqs" : {
+      "build" : {
+         "requires" : {
+            "File::Temp" : "0.14",
+            "IO::File" : "1.05",
+            "IO::String" : "1.00",
+            "Test::More" : "0.45"
+         }
+      },
+      "configure" : {
+         "requires" : {
+            "Module::Build" : "0.38"
+         }
+      },
+      "runtime" : {
+         "recommends" : {
+            "Sort::Key::OID" : "0.04"
+         },
+         "requires" : {
+            "Class::Accessor" : "0.30",
+            "Getopt::Long" : "2.04",
+            "IO::Handle" : "1.15",
+            "IO::Select" : "1.10",
+            "List::MoreUtils" : "0.21",
+            "parent" : "0.221",
+            "perl" : "5.006"
+         }
+      }
+   },
+   "provides" : {
+      "SNMP::Extension::PassPersist" : {
+         "file" : "lib/SNMP/Extension/PassPersist.pm",
+         "version" : "0.06"
+      }
+   },
+   "release_status" : "stable",
+   "resources" : {
+      "license" : [
+         "http://dev.perl.org/licenses/"
+      ],
+      "repository" : {
+         "url" : "https://github.com/maddingue/SNMP-Extension-PassPersist"
+      }
+   },
+   "version" : "0.06"
+}
