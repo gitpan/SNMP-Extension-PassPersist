@@ -1,5 +1,11 @@
 Revision history for SNMP-Extension-PassPersist
 
+0.07    2013.01.07 - Sebastien Aperghis-Tramoni (SAPER)
+        [FEATURE] CPAN-RT#82362: Add support for counter64 (Pete Bristow).
+        [TESTS] Skip some tests under Win32.
+        [CODE] Replaced $/ with explicit "\n" to try fixing tests under Win32.
+        [DIST] No longer include README.pod in the CPAN version.
+
 0.06    2011.08.12 - Sebastien Aperghis-Tramoni (SAPER)
         [TESTS] Added a mock version of Sys::Syslog to avoid useless dies
         when running with old versions of the module in white boxes.

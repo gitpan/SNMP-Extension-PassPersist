@@ -17,7 +17,7 @@ use Sys::Syslog;
 
 {
     no strict "vars";
-    $VERSION = '0.06';
+    $VERSION = '0.07';
 }
 
 use constant HAVE_SORT_KEY_OID
@@ -60,6 +60,7 @@ use constant SNMP_INCONSISTENT_VALUE    => "inconsistent-value";
 # global variables -------------------------------------------------------------
 my %snmp_ext_type = (
     counter     => "counter",
+    counter64   => "counter64",
     gauge       => "gauge",
     integer     => "integer",
     ipaddr      => "ipaddress",
@@ -179,7 +180,7 @@ sub run {
                 my @args = split /,/, $options{$op};
                 my $coderef = $self->dispatch->{$op}{code};
                 my @result = $coderef->($self, @args);
-                $self->output->print(join $/, @result, "");
+                $self->output->print(join "\n", @result, "");
             }
         }
     }
@@ -461,7 +462,7 @@ sub process_cmd {
     }
 
     # output the result
-    $self->output->print(join $/, @result, "");
+    $self->output->print(join "\n", @result, "");
 }
 
 
@@ -544,7 +545,7 @@ for Net-SNMP
 
 =head1 VERSION
 
-This is the documentation of C<SNMP::Extension::PassPersist> version 0.06
+This is the documentation of C<SNMP::Extension::PassPersist> version 0.07
 
 
 =head1 SYNOPSIS
